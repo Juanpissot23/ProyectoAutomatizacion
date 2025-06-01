@@ -1,0 +1,189 @@
+// ------------- ENTRADAS -------------
+PROGRAM PLC_PRG
+VAR
+    // Entradas (sensores)
+    entrada_vehiculo      : BOOL; // Sensor de entrada
+    salida_vehiculo       : BOOL; // Sensor de salida
+
+    // Salidas (LEDs)
+    led_barrera_entrada   : BOOL := FALSE;
+    led_sensor_entrada    : BOOL := FALSE;
+    led_barrera_salida    : BOOL := FALSE;
+    led_sensor_salida     : BOOL := FALSE;
+    led_alarma_lleno      : BOOL := FALSE; // LED rojo - alarma
+    led_espacios_disponibles : BOOL := TRUE;  // LED verde - espacios disponibles
+
+    // Variables internas
+    contador_espacios      : INT := 5; // Contador de espacios disponibles
+
+    // Temporizadores
+    t_5s                  : TON;      // Temporizador 5 segundos
+    t_2s                  : TON;      // Temporizador 2 segundos post detección
+    t_parpadeo            : TON;      // Temporizador parpadeo 500 ms
+
+    // Variables para parpadeo
+    parpadeo_activo       : BOOL := FALSE;
+    parpadeo_estado_led   : BOOL := FALSE;
+    parpadeo_contador     : INT := 0;
+
+    // Estado máquina principal
+    estado                : INT := 0;
+    // Subestado para entrada y salida
+    subestado_entrada     : INT := 0;
+    subestado_salida      : INT := 0;
+END_VAR
+
+
+// ------------- CODIGO PRINCIPAL -------------
+// Control del LED verde de espacios disponibles
+led_espacios_disponibles := (contador_espacios > 0);
+
+// Máquina principal
+CASE estado OF
+
+    // Estado 0: Inicialización
+    0:
+        contador_espacios := 5;
+        led_alarma_lleno := FALSE;
+        led_sensor_entrada := FALSE;
+        led_barrera_entrada := FALSE;
+        led_sensor_salida := FALSE;
+        led_barrera_salida := FALSE;
+        led_espacios_disponibles := TRUE;
+
+        parpadeo_activo := FALSE;
+        parpadeo_estado_led := FALSE;
+        parpadeo_contador := 0;
+
+        estado := 1;
+
+    // Estado 1: Operación normal
+    1:
+        // Si no hay espacios, activar alarma y permitir solo salida
+        IF contador_espacios <= 0 THEN
+            contador_espacios := 0; // Evitar negativos
+            parpadeo_activo := TRUE;
+            parpadeo_contador := 0;
+            parpadeo_estado_led := FALSE;
+            t_parpadeo(IN := FALSE);
+            estado := 5; // Estado de alarma con parpadeo
+        ELSE
+            parpadeo_activo := FALSE;
+            led_alarma_lleno := FALSE;
+
+            // Procesar entrada (solo si hay espacios disponibles)
+            IF entrada_vehiculo AND contador_espacios > 0 THEN
+                estado := 10; // Proceso entrada
+                subestado_entrada := 0;
+            // Procesar salida (solo si hay vehículos dentro)
+            ELSIF salida_vehiculo AND contador_espacios < 5 THEN
+                estado := 20; // Proceso salida
+                subestado_salida := 0;
+            END_IF
+        END_IF
+
+    // Estado 5: Alarma espacios llenos con parpadeo 3 veces y luego fijo
+    5:
+        IF parpadeo_activo THEN
+            t_parpadeo(IN := TRUE, PT := T#500ms);
+            IF t_parpadeo.Q THEN
+                t_parpadeo(IN := FALSE); // Reiniciar temporizador
+                parpadeo_estado_led := NOT parpadeo_estado_led;
+                led_alarma_lleno := parpadeo_estado_led;
+
+                IF NOT parpadeo_estado_led THEN
+                    parpadeo_contador := parpadeo_contador + 1; // Contar ciclo completo ON-OFF
+                END_IF
+
+                IF parpadeo_contador >= 3 THEN
+                    // Parpadeo completo, mantener LED encendido fijo
+                    parpadeo_activo := FALSE;
+                    led_alarma_lleno := TRUE;
+                END_IF
+            END_IF
+        END_IF
+
+        // Permitir solo salida cuando alarma activa (y hay vehículos dentro)
+		IF salida_vehiculo AND contador_espacios < 5 THEN
+			estado := 20;
+			subestado_salida := 0;
+		END_IF
+
+        // Si espacios vuelven a estar disponibles (por salida)
+        IF contador_espacios > 0 THEN
+            parpadeo_activo := FALSE;
+            led_alarma_lleno := FALSE;
+            estado := 1;
+        END_IF
+
+    // Estado 10: Proceso entrada
+    10:
+        CASE subestado_entrada OF
+
+            0: // Detecta vehículo, activa LEDs y temporizador 5s
+                led_sensor_entrada := TRUE;
+                led_barrera_entrada := TRUE;
+                t_5s(IN := TRUE, PT := T#5s);
+                IF t_5s.Q THEN
+                    t_5s(IN := FALSE);
+                    led_sensor_entrada := FALSE;
+                    subestado_entrada := 1; // Esperar que sensor deje de detectar
+                END_IF
+
+            1: // Esperar que sensor deje de detectar vehículo
+                t_2s(IN := FALSE); // Temporizador apagado mientras espera sensor
+                IF NOT entrada_vehiculo THEN
+                    subestado_entrada := 2; // Iniciar temporizador 2s
+                END_IF
+
+            2: // Mantener barrera encendida 5 segundos más
+                t_2s(IN := TRUE, PT := T#5S);
+                IF t_2s.Q THEN
+                    t_2s(IN := FALSE);
+                    led_barrera_entrada := FALSE;
+                    contador_espacios := contador_espacios - 1;
+                    IF contador_espacios < 0 THEN
+                        contador_espacios := 0;
+                    END_IF
+                    estado := 1; // Volver a estado normal
+                END_IF
+
+        END_CASE
+
+    // Estado 20: Proceso salida
+    20:
+        CASE subestado_salida OF
+
+            0: // Detecta vehículo, activa LEDs y temporizador 5s
+                led_sensor_salida := TRUE;
+                led_barrera_salida := TRUE;
+                t_5s(IN := TRUE, PT := T#5s);
+                IF t_5s.Q THEN
+                    t_5s(IN := FALSE);
+                    led_sensor_salida := FALSE;
+                    subestado_salida := 1; // Esperar que sensor deje de detectar
+                END_IF
+
+            1: // Esperar que sensor deje de detectar vehículo
+                t_2s(IN := FALSE); // Temporizador apagado mientras espera sensor
+                IF NOT salida_vehiculo THEN
+                    subestado_salida := 2; // Iniciar temporizador 2s
+                END_IF
+
+            2: // Mantener barrera encendida 5 segundos más
+                t_2s(IN := TRUE, PT := T#5S);
+                IF t_2s.Q THEN
+                    t_2s(IN := FALSE);
+                    led_barrera_salida := FALSE;
+                    contador_espacios := contador_espacios + 1;
+                    IF contador_espacios > 5 THEN
+                        contador_espacios := 5;
+                    END_IF
+                    estado := 1; // Volver a estado normal
+                END_IF
+
+        END_CASE
+
+ELSE
+    estado := 0; // Reiniciar si estado no reconocido
+END_CASE

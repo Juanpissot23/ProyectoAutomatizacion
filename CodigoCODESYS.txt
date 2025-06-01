@@ -18,7 +18,7 @@ VAR
 
     // Temporizadores
     t_5s                  : TON;      // Temporizador 5 segundos
-    t_2s                  : TON;      // Temporizador 2 segundos post detección
+    t_2s                  : TON;      // Temporizador 5 segundos post detección
     t_parpadeo            : TON;      // Temporizador parpadeo 500 ms
 
     // Variables para parpadeo
